@@ -1,0 +1,6 @@
+streamlit
+pandas
+numpy
+onnxruntime
+SimpleITK
+plotly
