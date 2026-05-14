@@ -4,3 +4,4 @@ numpy
 onnxruntime
 SimpleITK
 plotly
+mlflow
