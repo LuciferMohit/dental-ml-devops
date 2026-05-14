@@ -8,12 +8,20 @@ import tempfile
 import zipfile
 import os
 import shutil
+import mlflow
+import time  # Added to track how fast your AI is!
 
-# --- CONFIGURATION ---
-# Removed the _MEIPASS / .exe logic. Docker uses straightforward paths.
+# --- MLFLOW CONFIGURATION ---
+# 1. Point Python to your live AWS server
+mlflow.set_tracking_uri("http://13.200.239.160:5000")
+
+# 2. Name your experiment (this will create a new folder in the UI)
+mlflow.set_experiment("Dental_Implant_Stability")
+
+# --- MODEL CONFIGURATION ---
 MODEL_PATH = "implant_model.onnx"
 
-# FIXED: Removed the duplicate 'years_placed_ 6 MONTHS '
+# Use this EXACT list in your ONNX script (Includes your brilliant 6th month duplicate fix)
 MODEL_COLUMNS = [
     'Gender', 'Smoking', 'Alcohol', 'Diabetes', 'Hypertension',
     'FOV_full jaw', 'FOV_lower jaw', 'FOV_lower jaw only', 'FOV_narrowFOV',
@@ -21,11 +29,12 @@ MODEL_COLUMNS = [
     'FOV_upper jaw', 'FOV_upper jaw only',
     'years_placed_ 1 YEAR ', 'years_placed_ 1.5 YEARS ', 'years_placed_ 10 MONTHS ',
     'years_placed_ 11 MONTHS ', 'years_placed_ 3 MONTHS ', 'years_placed_ 4 MONTHS ',
-    'years_placed_ 5 MONTHS ', 'years_placed_ 6 MONTHS ',
+    'years_placed_ 5 MONTHS ', 'years_placed_ 6 MONTHS ', 'years_placed_ 6 MONTHS ',
     'years_placed_ 7 MONTHS ', 'years_placed_ 8 MONTHS ', 'years_placed_ 9 MONTHS ',
     'years_placed_1 YEAR',
     'bone density Misch_D3'
 ]
+
 
 # --- 1. DICOM HELPER FUNCTIONS ---
 def process_dicom_zip(zip_file):
@@ -53,6 +62,7 @@ def process_dicom_zip(zip_file):
         return None, str(e)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 def create_3d_plot(sitk_image):
     size = sitk_image.GetSize()
@@ -88,6 +98,7 @@ def create_3d_plot(sitk_image):
         height=400
     )
     return fig
+
 
 # --- 2. STREAMLIT UI ---
 st.set_page_config(page_title="Implant Survival AI", layout="wide")
@@ -133,43 +144,82 @@ with col_data:
 
         submitted = st.form_submit_button("🚀 Predict Survival")
 
-# --- 3. PREDICTION LOGIC ---
+# --- 3. PREDICTION LOGIC & MLOPS TRACKING ---
 if submitted:
-    input_data = pd.DataFrame(0, index=[0], columns=MODEL_COLUMNS)
+    # Start tracking this specific prediction event in MLflow!
+    with mlflow.start_run():
 
-    input_data['Gender'] = 1 if gender == "Male" else 0
-    input_data['Diabetes'] = 1 if diabetes == "Yes" else 0
-    input_data['Smoking'] = 1 if smoking == "Yes" else 0
-    input_data['Alcohol'] = 1 if alcohol == "Yes" else 0
-    input_data['Hypertension'] = 1 if hypertension == "Yes" else 0
+        # 1. Log the EXACT parameters the user selected in the UI
+        mlflow.log_params({
+            "Gender": gender,
+            "Diabetes": diabetes,
+            "Smoking": smoking,
+            "Alcohol": alcohol,
+            "Hypertension": hypertension,
+            "FOV": fov,
+            "Bone_Density": bone_density,
+            "Time_Placed": time_placed
+        })
 
-    if fov == "Full Jaw": input_data['FOV_full jaw'] = 1
-    elif fov == "Lower Jaw": input_data['FOV_lower jaw'] = 1
-    elif fov == "Upper Jaw": input_data['FOV_upper jaw'] = 1
-    elif fov == "Posterior": input_data['FOV_posterior'] = 1
-    elif fov == "Narrow": input_data['FOV_narrowFOV'] = 1
+        input_data = pd.DataFrame(0, index=[0], columns=MODEL_COLUMNS)
 
-    if "D3" in bone_density: input_data['bone density Misch_D3'] = 1
+        input_data['Gender'] = 1 if gender == "Male" else 0
+        input_data['Diabetes'] = 1 if diabetes == "Yes" else 0
+        input_data['Smoking'] = 1 if smoking == "Yes" else 0
+        input_data['Alcohol'] = 1 if alcohol == "Yes" else 0
+        input_data['Hypertension'] = 1 if hypertension == "Yes" else 0
 
-    if time_placed == "3 Months": input_data['years_placed_ 3 MONTHS '] = 1
-    elif time_placed == "6 Months": input_data['years_placed_ 6 MONTHS '] = 1
-    elif time_placed == "9 Months": input_data['years_placed_ 9 MONTHS '] = 1
-    elif time_placed == "1 Year": input_data['years_placed_1 YEAR'] = 1
-    elif time_placed == "1.5 Years": input_data['years_placed_ 1.5 YEARS '] = 1
+        if fov == "Full Jaw":
+            input_data['FOV_full jaw'] = 1
+        elif fov == "Lower Jaw":
+            input_data['FOV_lower jaw'] = 1
+        elif fov == "Upper Jaw":
+            input_data['FOV_upper jaw'] = 1
+        elif fov == "Posterior":
+            input_data['FOV_posterior'] = 1
+        elif fov == "Narrow":
+            input_data['FOV_narrowFOV'] = 1
 
-    try:
-        input_array = input_data.values.astype(np.float32)
-        session = ort.InferenceSession(MODEL_PATH)
-        input_name = session.get_inputs()[0].name
-        prediction_output = session.run(None, {input_name: input_array})
-        prediction = float(prediction_output[0][0][0])
+        if "D3" in bone_density: input_data['bone density Misch_D3'] = 1
 
-        st.divider()
-        st.markdown(f"### Predicted Survival: **{prediction:.2f} Years**")
+        if time_placed == "3 Months":
+            input_data['years_placed_ 3 MONTHS '] = 1
+        elif time_placed == "6 Months":
+            input_data['years_placed_ 6 MONTHS '] = 1
+        elif time_placed == "9 Months":
+            input_data['years_placed_ 9 MONTHS '] = 1
+        elif time_placed == "1 Year":
+            input_data['years_placed_1 YEAR'] = 1
+        elif time_placed == "1.5 Years":
+            input_data['years_placed_ 1.5 YEARS '] = 1
 
-        if prediction > 10: st.success("Excellent Prognosis (> 10 Years)")
-        elif prediction > 7: st.warning("Moderate Prognosis (7-10 Years)")
-        else: st.error("High Risk (< 7 Years)")
+        try:
+            # Start a timer to see how fast your ONNX model is
+            start_time = time.time()
 
-    except Exception as e:
-        st.error(f"Error running ONNX model: {str(e)}")
+            input_array = input_data.values.astype(np.float32)
+            session = ort.InferenceSession(MODEL_PATH)
+            input_name = session.get_inputs()[0].name
+            prediction_output = session.run(None, {input_name: input_array})
+            prediction = float(prediction_output[0][0][0])
+
+            # Stop the timer
+            inference_time_ms = (time.time() - start_time) * 1000
+
+            # 2. Log the Final Results to MLflow
+            mlflow.log_metric("predicted_survival_years", prediction)
+            mlflow.log_metric("inference_time_ms", inference_time_ms)
+
+            st.divider()
+            st.markdown(f"### Predicted Survival: **{prediction:.2f} Years**")
+
+            if prediction > 10:
+                st.success("Excellent Prognosis (> 10 Years)")
+            elif prediction > 7:
+                st.warning("Moderate Prognosis (7-10 Years)")
+            else:
+                st.error("High Risk (< 7 Years)")
+
+        except Exception as e:
+            mlflow.log_param("error", str(e))
+            st.error(f"Error running ONNX model: {str(e)}")
